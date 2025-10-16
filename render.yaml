@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: fs22-discord-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DISCORD_TOKEN
+        value: your_discord_bot_token_here
+      - key: FS22_SERVER_URL
+        value: your_fs22_server_xml_url_here
+      - key: DISCORD_CHANNEL_ID
+        value: your_discord_channel_id_here
+      - key: CHECK_INTERVAL
+        value: "60"
