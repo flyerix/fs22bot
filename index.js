@@ -1,52 +1,155 @@
 const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder
+  Client, GatewayIntentBits, EmbedBuilder,
+  REST, Routes, SlashCommandBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder
 } = require("discord.js");
 const fetch = require("node-fetch");
+const xml2js = require("xml2js");
 const keepAlive = require("./keepAlive");
 require("dotenv").config();
 
 const TOKEN = process.env.TOKEN;
-const SERVER_API = process.env.SERVER_API; // es. http://IP:PORT/
+const SERVER_API = process.env.SERVER_API; // es. http://IP:PORT/state.xml
 const CHANNEL_STATUS = process.env.CHANNEL_STATUS;
 const CHANNEL_CHANGELOG = process.env.CHANNEL_CHANGELOG;
 const ADMIN_CHANNEL = process.env.ADMIN_CHANNEL || null;
 const NOTIFY_ROLE_ID = process.env.NOTIFY_ROLE_ID || null;
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const parser = new xml2js.Parser({ explicitArray: false });
 
 // Stato e cache
-let lastStatus = null;            // "🟢 Online" / "🔴 Offline"
-let lastPlayers = null;           // "X/Y"
-let lastMods = [];                // array di nomi mod
-let notifyEnabled = true;         // toggle per notifiche automatiche
-let lastStatusNotifTs = 0;        // timestamp ultima notifica stato (rate limit)
-let STATUS_COOLDOWN_MS = 60_000;  // 60s
-let MODS_CACHE = {
-  list: [],
-  fetchedAt: 0,
-  ttl: 60_000 // 60s di cache
-};
+let lastPlayers = null;
+let lastMods = [];
+let notifyEnabled = true;
+let lastStatusNotifTs = 0;
+const STATUS_COOLDOWN_MS = 60_000;
+let MODS_CACHE = { list: [], fetchedAt: 0, ttl: 60_000 };
 
-// Registrazione comandi slash
+// Funzione parsing XML
+async function fetchXMLasJSON(url) {
+  const res = await fetch(url);
+  const text = await res.text();
+  return await parser.parseStringPromise(text);
+}
+
+// Estrattori
+async function getServerStatus() {
+  const data = await fetchXMLasJSON(SERVER_API);
+  const slots = data.Server.Slots.$;
+  return {
+    online: true,
+    name: data.Server.$.name,
+    map: data.Server.$.mapName,
+    players: ${slots.numUsed}/${slots.capacity}
+  };
+}
+
+async function getMods() {
+  const data = await fetchXMLasJSON(SERVER_API);
+  const mods = data.Server.Mods.Mod;
+  const modsArray = Array.isArray(mods) ? mods : [mods];
+  return modsArray.map(m => ({
+    id: m.$.name,
+    name: m._,
+    author: m.$.author,
+    version: m.$.version
+  }));
+}
+
+// UI componenti
+function statusComponents() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("status_refresh").setLabel("Aggiorna ora").setStyle(ButtonStyle.Primary).setEmoji("🔄"),
+    new ButtonBuilder().setCustomId("status_toggle_notify").setLabel(notifyEnabled ? "Notifiche: ON" : "Notifiche: OFF").setStyle(notifyEnabled ? ButtonStyle.Success : ButtonStyle.Danger).setEmoji(notifyEnabled ? "🔔" : "🔕")
+  );
+}
+
+function modsComponents() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId("mods_filter").setPlaceholder("Scegli filtro mod").addOptions(
+      { label: "Tutte le mod", value: "all", emoji: "📋" },
+      { label: "Aggiunte", value: "added", emoji: "➕" },
+      { label: "Rimosse", value: "removed", emoji: "➖" }
+    )
+  );
+}
+
+// Embed builders
+function buildStatusEmbed(status, manual = false) {
+  return new EmbedBuilder()
+    .setTitle("📡 Stato Server FS22")
+    .setColor(status.online ? 0x2ecc71 : 0xe74c3c)
+    .addFields(
+      { name: "Server", value: status.name, inline: true },
+      { name: "Mappa", value: status.map, inline: true },
+      { name: "Giocatori", value: 👥 ${status.players}, inline: true }
+    )
+    .setFooter({ text: manual ? "Richiesta manuale" : "Aggiornamento automatico" })
+    .setTimestamp();
+}
+
+function buildModsEmbed(mods, added, removed, manual = false) {
+  return new EmbedBuilder()
+    .setTitle("📝 Mod FS22")
+    .setColor(manual ? 0xf1c40f : 0x3498db)
+    .addFields(
+      { name: "📦 Totale attive", value: ${mods.length}, inline: true },
+      { name: "➕ Aggiunte", value: added.length ? added.map(m => m.name).join(", ") : "Nessuna", inline: false },
+      { name: "➖ Rimosse", value: removed.length ? removed.map(m => m.name).join(", ") : "Nessuna", inline: false },
+      { name: "📋 Lista completa", value: mods.length ? mods.map(m => ${m.name} (${m.version})).join(", ") : "Nessuna mod attiva", inline: false }
+    )
+    .setFooter({ text: manual ? "Richiesta manuale" : "Aggiornamento giornaliero" })
+    .setTimestamp();
+}
+// Caching mods
+async function getModsCached() {
+  const now = Date.now();
+  if (MODS_CACHE.list.length && now - MODS_CACHE.fetchedAt < MODS_CACHE.ttl) return MODS_CACHE.list;
+  const mods = await getMods();
+  MODS_CACHE.list = mods;
+  MODS_CACHE.fetchedAt = now;
+  return mods;
+}
+
+// Controllo server automatico
+async function checkServer() {
+  try {
+    const status = await getServerStatus();
+    const changed = status.players !== lastPlayers;
+    const now = Date.now();
+    const cooldownPassed = now - lastStatusNotifTs >= STATUS_COOLDOWN_MS;
+
+    if (changed && notifyEnabled && cooldownPassed) {
+      const channel = client.channels.cache.get(CHANNEL_STATUS);
+      if (channel) {
+        await channel.send({ embeds: [buildStatusEmbed(status)], components: [statusComponents()] });
+        lastStatusNotifTs = now;
+      }
+    }
+    lastPlayers = status.players;
+  } catch {
+    // server offline
+  }
+}
+
+// Changelog mod giornaliero
+async function checkModsDailyChangelog() {
+  const current = await getModsCached();
+  const added = current.filter(m => !lastMods.find(x => x.id === m.id));
+  const removed = lastMods.filter(m => !current.find(x => x.id === m.id));
+  if (added.length  removed.length  current.length !== lastMods.length) {
+    const channel = client.channels.cache.get(CHANNEL_CHANGELOG);
+    if (channel) await channel.send({ embeds: [buildModsEmbed(current, added, removed)], components: [modsComponents()] });
+  }
+  lastMods = current;
+}
+
+// Comandi slash
 const commands = [
-  new SlashCommandBuilder()
-    .setName("help")
-    .setDescription("❓ Mostra i comandi disponibili e funzioni del bot"),
-  new SlashCommandBuilder()
-    .setName("status")
-    .setDescription("📡 Mostra lo stato attuale del server e i giocatori connessi"),
-  new SlashCommandBuilder()
-    .setName("mods")
-    .setDescription("📋 Mostra la lista mod attive e filtri interattivi")
+  new SlashCommandBuilder().setName("help").setDescription("❓ Mostra i comandi disponibili"),
+  new SlashCommandBuilder().setName("status").setDescription("📡 Mostra lo stato del server"),
+  new SlashCommandBuilder().setName("mods").setDescription("📋 Mostra la lista mod attive")
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -54,282 +157,46 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 client.once("ready", async () => {
   console.log(✅ Bot avviato come ${client.user.tag});
   keepAlive();
-
-  // Registra comandi globali
-  try {
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("✅ Comandi slash registrati");
-  } catch (err) {
-    console.error("Errore registrazione comandi:", err);
-  }
-
-  // Avvio scheduler
+  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
   checkServer();
-  setInterval(checkServer, 10_000); // ogni 10s per stato/players
-  setInterval(checkModsDailyChangelog, 24 * 60 * 60 * 1000); // ogni 24h per changelog
+  setInterval(checkServer, 10_000);
+  setInterval(checkModsDailyChangelog, 24 * 60 * 60 * 1000);
 });
 
-// Utility: invio errori ad admin channel
-function reportError(message, err) {
-  console.error(message, err);
-  if (ADMIN_CHANNEL) {
-    const channel = client.channels.cache.get(ADMIN_CHANNEL);
-    if (channel) channel.send(⚠️ ${message});
-  }
-}
-
-// Fetch con gestione errori
-async function safeFetchJSON(url) {
-  try {
-    const res = await fetch(url, { timeout: 10_000 });
-    if (!res.ok) throw new Error(HTTP ${res.status});
-    return await res.json();
-  } catch (err) {
-    reportError(Errore fetch su ${url}, err);
-    throw err;
-  }
-}
-
-// Componenti UI
-function statusComponents() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("status_refresh")
-      .setLabel("Aggiorna ora")
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji("🔄"),
-    new ButtonBuilder()
-      .setCustomId("status_toggle_notify")
-      .setLabel(notifyEnabled ? "Notifiche: ON" : "Notifiche: OFF")
-      .setStyle(notifyEnabled ? ButtonStyle.Success : ButtonStyle.Danger)
-      .setEmoji(notifyEnabled ? "🔔" : "🔕")
-  );
-}
-
-function modsComponents() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("mods_filter")
-      .setPlaceholder("Scegli filtro mod")
-      .addOptions(
-        { label: "Tutte le mod", value: "all", emoji: "📋" },
-        { label: "Aggiunte (rispetto all'ultimo snapshot)", value: "added", emoji: "➕" },
-        { label: "Rimosse (rispetto all'ultimo snapshot)", value: "removed", emoji: "➖" }
-      )
-  );
-}
-
-// Embed builders
-function buildStatusEmbed(data, manual = false) {
-  const status = data.server.isOnline ? "🟢 Online" : "🔴 Offline";
-  const players = ${data.slots.used}/${data.slots.capacity};
-  const embed = new EmbedBuilder()
-    .setTitle("📡 Stato Server FS22")
-    .setColor(data.server.isOnline ? 0x2ecc71 : 0xe74c3c)
-    .setThumbnail("https://cdn-icons-png.flaticon.com/512/3208/3208679.png")
-    .addFields(
-      { name: "Stato", value: status, inline: true },
-      { name: "Giocatori", value: 👥 ${players}, inline: true }
-    )
-    .setFooter({ text: manual ? "Richiesta manuale" : "Aggiornamento automatico" })
-    .setTimestamp();
-
-  return { embed, status, players };
-}
-
-function buildModsEmbed(currentMods, added, removed, manual = false) {
-  // Suddivisione lista lunga in blocchi da 1024 caratteri per campo
-  const chunk = (arr, size) => {
-    const res = [];
-    let buf = "";
-    for (const item of arr) {
-      const piece = String(item);
-      if ((buf + (buf ? ", " : "") + piece).length > size) {
-        res.push(buf);
-        buf = piece;
-      } else {
-        buf = buf ? ${buf}, ${piece} : piece;
-      }
-    }
-    if (buf) res.push(buf);
-    return res;
-  };
-
-  const embed = new EmbedBuilder()
-    .setTitle("📝 Mod FS22")
-    .setColor(manual ? 0xf1c40f : 0x3498db)
-    .setThumbnail("https://cdn-icons-png.flaticon.com/512/2921/2921222.png")
-    .addFields(
-      { name: "📦 Totale attive", value: ${currentMods.length}, inline: true },
-      { name: "➕ Aggiunte", value: added.length ? added.join(", ") : "Nessuna", inline: false },
-      { name: "➖ Rimosse", value: removed.length ? removed.join(", ") : "Nessuna", inline: false }
-    )
-    .setFooter({ text: manual ? "Richiesta manuale" : "Aggiornamento giornaliero" })
-    .setTimestamp();
-
-  if (currentMods.length) {
-    const chunks = chunk(currentMods, 1024);
-    chunks.forEach((c, i) => {
-      embed.addFields({ name: i === 0 ? "📋 Lista completa" : "Continua", value: c, inline: false });
-    });
-  } else {
-    embed.addFields({ name: "📋 Lista completa", value: "Nessuna mod attiva", inline: false });
-  }
-
-  return embed;
-}
-
-// Caching mods (TTL)
-async function getModsCached() {
-  const now = Date.now();
-  if (MODS_CACHE.list.length && now - MODS_CACHE.fetchedAt < MODS_CACHE.ttl) {
-    return MODS_CACHE.list;
-  }
-  const modsResp = await safeFetchJSON(SERVER_API + "mods");
-  const current = (modsResp || []).map(m => m.name).filter(Boolean);
-  MODS_CACHE.list = current;
-  MODS_CACHE.fetchedAt = now;
-  return current;
-}
-
-// Controllo server (automatico con rate limiting)
-async function checkServer() {
-  try {
-    const data = await safeFetchJSON(SERVER_API);
-    const { embed, status, players } = buildStatusEmbed(data, false);
-
-    const changed = status !== lastStatus || players !== lastPlayers;
-    const now = Date.now();
-    const cooldownPassed = now - lastStatusNotifTs >= STATUS_COOLDOWN_MS;
-
-    if (changed) {
-      // invia solo se notifiche attive e cooldown rispettato
-      if (notifyEnabled && cooldownPassed) {
-        const channel = client.channels.cache.get(CHANNEL_STATUS);
-        if (channel) {
-          const content =
-            data.server.isOnline && NOTIFY_ROLE_ID ? <@&${NOTIFY_ROLE_ID}> : null;
-          await channel.send({ content, embeds: [embed], components: [statusComponents()] });
-          lastStatusNotifTs = now;
-        }
-      }
-      lastStatus = status;
-      lastPlayers = players;
-    }
-  } catch (err) {
-    // già gestito da reportError
-  }
-}
-
-// Changelog mod giornaliero
-async function checkModsDailyChangelog() {
-  try {
-    const currentMods = await getModsCached();
-    const added = currentMods.filter(m => !lastMods.includes(m));
-    const removed = lastMods.filter(m => !currentMods.includes(m));
-
-    if (added.length  removed.length  currentMods.length !== lastMods.length) {
-      const channel = client.channels.cache.get(CHANNEL_CHANGELOG);
-      if (channel) {
-        const embed = buildModsEmbed(currentMods, added, removed, false);
-        await channel.send({ embeds: [embed], components: [modsComponents()] });
-      }
-    }
-    lastMods = currentMods;
-  } catch (err) {
-    // già gestito da reportError
-  }
-}
-// Listener interazioni (slash + componenti)
+// Listener interazioni
 client.on("interactionCreate", async interaction => {
-  // Comandi slash
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === "help") {
       const embed = new EmbedBuilder()
         .setTitle("❓ Help FS22 Bot")
         .setColor(0x95a5a6)
-        .setDescription(
-          [
-            "• /status — Mostra stato server e giocatori, con pulsante Aggiorna e toggle notifiche.",
-            "• /mods — Mostra lista mod attive, con menu per filtrare Aggiunte/Rimosse.",
-            "• Notifiche automatiche — Stato server (rate-limited) e changelog giornaliero.",
-            "• Caching — Le mod sono cacheate per 60s per prestazioni migliori."
-          ].join("\n")
-        )
+        .setDescription("• /status — Stato server e giocatori\n• /mods — Lista mod attive\n• Notifiche automatiche e changelog giornaliero")
         .setTimestamp();
-
       return interaction.reply({ embeds: [embed] });
     }
 
     if (interaction.commandName === "status") {
       try {
-        const data = await safeFetchJSON(SERVER_API);
-        const { embed } = buildStatusEmbed(data, true);
-        return interaction.reply({ embeds: [embed], components: [statusComponents()] });
-      } catch (err) {
-        return interaction.reply({ content: "⚠️ Errore nel recupero dello stato del server.", ephemeral: true });
+        const status = await getServerStatus();
+        return interaction.reply({ embeds: [buildStatusEmbed(status, true)], components: [statusComponents()] });
+      } catch {
+        return interaction.reply("⚠️ Server non raggiungibile (Offline).");
       }
     }
 
     if (interaction.commandName === "mods") {
       try {
         const current = await getModsCached();
-        const added = lastMods.length ? current.filter(m => !lastMods.includes(m)) : [];
-        const removed = lastMods.length ? lastMods.filter(m => !current.includes(m)) : [];
-        const embed = buildModsEmbed(current, added, removed, true);
-        return interaction.reply({ embeds: [embed], components: [modsComponents()] });
-      } catch (err) {
-        return interaction.reply({ content: "⚠️ Errore nel recupero delle mod.", ephemeral: true });
+        const added = lastMods.length ? current.filter(m => !lastMods.find(x => x.id === m.id)) : [];
+        const removed = lastMods.length ? lastMods.filter(m => !current.find(x => x.id === m.id)) : [];
+        return interaction.reply({ embeds: [buildModsEmbed(current, added, removed, true)], components: [modsComponents()] });
+      } catch {
+        return interaction.reply("⚠️ Errore nel recupero delle mod.");
       }
     }
   }
 
-  // Pulsanti e menu
   if (interaction.isButton()) {
     if (interaction.customId === "status_refresh") {
       try {
-        const data = await safeFetchJSON(SERVER_API);
-        const { embed } = buildStatusEmbed(data, true);
-        return interaction.update({ embeds: [embed], components: [statusComponents()] });
-      } catch (err) {
-        return interaction.reply({ content: "⚠️ Errore nell'aggiornamento dello stato.", ephemeral: true });
-      }
-    }
-
-    if (interaction.customId === "status_toggle_notify") {
-      notifyEnabled = !notifyEnabled;
-      // aggiorna i componenti per riflettere lo stato
-      try {
-        const data = await safeFetchJSON(SERVER_API);
-        const { embed } = buildStatusEmbed(data, true);
-        return interaction.update({ embeds: [embed], components: [statusComponents()] });
-      } catch {
-        // anche senza fetch possiamo aggiornare solo i componenti
-        const row = statusComponents();
-        return interaction.update({ components: [row] });
-      }
-    }
-  }
-
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === "mods_filter") {
-      try {
-        const current = await getModsCached();
-        const added = lastMods.length ? current.filter(m => !lastMods.includes(m)) : [];
-        const removed = lastMods.length ? lastMods.filter(m => !current.includes(m)) : [];
-
-        let filtered = current;
-        const choice = interaction.values[0];
-        if (choice === "added") filtered = added;
-        if (choice === "removed") filtered = removed;
-
-        const embed = buildModsEmbed(filtered, choice === "added" ? added : [], choice === "removed" ? removed : [], true);
-        return interaction.update({ embeds: [embed], components: [modsComponents()] });
-      } catch (err) {
-        return interaction.reply({ content: "⚠️ Errore nel filtrare le mod.", ephemeral: true });
-      }
-    }
-  }
-});
-
-client.login(TOKEN);
+        const status = await getServerStatus();
