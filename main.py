@@ -7,14 +7,27 @@ import os
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 
+# Importa configurazione Replit
+try:
+    from replit_config import replit_config
+    IS_REPLIT = True
+except ImportError:
+    IS_REPLIT = False
+
 # ==================== CONFIGURAZIONE ====================
 def load_config():
-    """Carica configurazione da environment variables"""
+    """Carica configurazione - ottimizzata per Replit"""
     config = {
-        "server_url": os.environ.get('FS22_SERVER_URL', 'http://89.163.192.12:10100/feed/dedicated-server-stats.xml?code=d735be47f00add366dc6d110a0eb5dac'),
-        "channel_id": os.environ.get('DISCORD_CHANNEL_ID', '1428263766923153510'),
-        "check_interval": int(os.environ.get('CHECK_INTERVAL', '60'))
+        "server_url": os.environ.get('FS22_SERVER_URL', 'http://il-tuo-server:porta'),
+        "channel_id": os.environ.get('DISCORD_CHANNEL_ID', '123456789'),
+        "check_interval": int(os.environ.get('CHECK_INTERVAL', '120'))  # Aumentato per risparmiare risorse
     }
+    
+    # Ottimizzazioni per Replit free
+    if IS_REPLIT:
+        config["check_interval"] = 180  # 3 minuti su Replit free
+        print("🔧 Modalità Replit Free attiva - Intervallo ottimizzato")
+    
     return config
 
 CONFIG = load_config()
@@ -620,10 +633,15 @@ async def before_daily_check():
 
 # ==================== AVVIO BOT ====================
 if __name__ == "__main__":
+    # Avvia keep-alive solo se su Replit
+    if IS_REPLIT:
+        replit_config.setup_keep_alive()
+        print("🚀 Avvio bot in modalità Replit Free")
+    
     token = os.environ.get('DISCORD_TOKEN')
     if token:
-        print(f"{EMOJIS['info']} Avvio bot FS22 Monitor su Render...")
+        print("🤖 Avvio bot FS22 Monitor...")
         bot.run(token)
     else:
-        print("ERRORE: Token Discord non trovato!")
-        print("Per favore imposta la variabile d'ambiente 'DISCORD_TOKEN' su Render")
+        print("❌ ERRORE: Token Discord non trovato!")
+        print("💡 Imposta la variabile d'ambiente 'DISCORD_TOKEN'")
