@@ -5,14 +5,17 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
-from flask import Flask
-from threading import Thread
 import xml.etree.ElementTree as ET
 
 # ==================== CONFIGURAZIONE ====================
 def load_config():
-    with open('config.json', 'r') as f:
-        return json.load(f)
+    """Carica configurazione da environment variables"""
+    config = {
+        "server_url": os.environ.get('FS22_SERVER_URL', 'http://89.163.192.12:10100/feed/dedicated-server-stats.xml?code=d735be47f00add366dc6d110a0eb5dac'),
+        "channel_id": os.environ.get('DISCORD_CHANNEL_ID', '1428263766923153510'),
+        "check_interval": int(os.environ.get('CHECK_INTERVAL', '60'))
+    }
+    return config
 
 CONFIG = load_config()
 
@@ -48,23 +51,6 @@ EMOJIS = {
     "map": "🗺️",
     "time": "⏱️"
 }
-
-# ==================== SERVER WEB PER KEEP-ALIVE ====================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return f"{EMOJIS['online']} Bot FS22 Monitor è online! Ultimo controllo: {server_data.get('last_check', 'Mai')}"
-
-@app.route('/health')
-def health():
-    return 'OK'
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    Thread(target=run_flask).start()
 
 # ==================== FUNZIONI SERVER FS22 ====================
 async def fetch_server_xml():
@@ -161,12 +147,15 @@ def parse_server_data(xml_content):
 
 # ==================== FUNZIONI UTILITY ====================
 def save_data():
-    """Salva i dati su file"""
-    with open('server_data.json', 'w') as f:
-        json.dump(server_data, f)
+    """Salva i dati su file (non usato su Render ma mantenuto per compatibilità)"""
+    try:
+        with open('server_data.json', 'w') as f:
+            json.dump(server_data, f)
+    except Exception as e:
+        print(f"Errore nel salvataggio dati: {e}")
 
 def load_data():
-    """Carica i dati dal file"""
+    """Carica i dati dal file (non usato su Render ma mantenuto per compatibilità)"""
     global server_data
     try:
         with open('server_data.json', 'r') as f:
@@ -292,9 +281,14 @@ def create_mod_changelog_embed(new_mods, removed_mods, total_mods):
 async def on_ready():
     print(f'{EMOJIS["success"]} Bot {bot.user} connesso a Discord!')
     print(f'{EMOJIS["info"]} Monitoraggio server FS22 attivo')
+    print(f'{EMOJIS["server"]} Server URL: {CONFIG["server_url"]}')
+    print(f'{EMOJIS["players"]} Canale notifiche: {CONFIG["channel_id"]}')
     
-    # Carica dati salvati
-    load_data()
+    # Carica dati salvati (solo per compatibilità)
+    try:
+        load_data()
+    except:
+        print("Inizializzazione dati da zero")
     
     # Avvia task
     if not server_monitor.is_running():
@@ -493,11 +487,11 @@ async def help_command(ctx):
         name="⚡ Funzionalità Automatiche",
         value=f"{EMOJIS['warning']} Notifiche stato server in tempo reale\n"
               f"{EMOJIS['clock']} Changelog mod giornaliero\n"
-              f"{EMOJIS['online']} Monitoraggio 24/7",
+              f"{EMOJIS['online']} Monitoraggio 24/7 su Render",
         inline=False
     )
     
-    embed.set_footer(text="Bot creato per Farming Simulator 22")
+    embed.set_footer(text="Bot creato per Farming Simulator 22 • Hosted on Render")
     await ctx.respond(embed=embed)
 
 # ==================== TASK AUTOMATICI ====================
@@ -507,7 +501,7 @@ async def server_monitor():
     
     channel = bot.get_channel(int(CONFIG['channel_id']))
     if channel is None:
-        print("Canale non trovato!")
+        print("Canale non trovato! Verifica DISCORD_CHANNEL_ID")
         return
     
     # Recupera dati server
@@ -557,8 +551,11 @@ async def server_monitor():
     if server_info:
         server_data['last_mods'] = server_info.get('mods', [])
     
-    # Salva dati
-    save_data()
+    # Salva dati (solo per compatibilità)
+    try:
+        save_data()
+    except:
+        print("Impossibile salvare dati su filesystem Render")
 
 @tasks.loop(hours=24)
 async def daily_mod_check():
@@ -607,7 +604,10 @@ async def daily_mod_check():
     
     # Aggiorna lista mods
     server_data['last_mods'] = list(current_mods)
-    save_data()
+    try:
+        save_data()
+    except:
+        print("Impossibile salvare dati mod")
 
 # ==================== GESTIONE ERRORI ====================
 @server_monitor.before_loop
@@ -620,12 +620,10 @@ async def before_daily_check():
 
 # ==================== AVVIO BOT ====================
 if __name__ == "__main__":
-    keep_alive()
-    
-    # Avvia il bot con il tuo token
     token = os.environ.get('DISCORD_TOKEN')
     if token:
+        print(f"{EMOJIS['info']} Avvio bot FS22 Monitor su Render...")
         bot.run(token)
     else:
         print("ERRORE: Token Discord non trovato!")
-        print("Per favore imposta la variabile d'ambiente 'DISCORD_TOKEN'")
+        print("Per favore imposta la variabile d'ambiente 'DISCORD_TOKEN' su Render")
