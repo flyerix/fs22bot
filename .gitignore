@@ -29,12 +29,18 @@ ENV/
 env.bak/
 venv.bak/
 
-# Replit
-.replit
-
 # Data files
 server_data.json
 
 # Secrets
 secrets.json
 config_secret.json
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
