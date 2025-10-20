@@ -1,6 +1,7 @@
 {
   "xmlUrl": "http://89.163.192.12:10100/feed/dedicated-server-stats.xml?code=d735be47f00add366dc6d110a0eb5dac",
-  "channelID": "1428263766923153510",
-  "updateInterval": 60000,
-  "cooldownPeriod": 60000
+  "channelID": "YOUR_DISCORD_CHANNEL_ID",
+  "updateInterval": 150000,
+  "cooldownPeriod": 150000,
+  "discordToken": "MTQyODI2NTEzMzk0NzIyNDE1NA.G41qjr.wnAM76urPAe2d4GYbnD6ocAPGwdV4piq8rLrQ4"
 }
