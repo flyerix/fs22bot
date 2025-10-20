@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: fs22-discord-bot
+    env: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
