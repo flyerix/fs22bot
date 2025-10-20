@@ -9,7 +9,7 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 let lastServerData = null; // Memorizza l'ultimo stato completo del server (quando online)
 let lastUpdateTime = 0;
 
-client.once('ready', () => {
+client.once('clientready', () => {
   console.log(`✅ Bot connesso come ${client.user.tag}!`);
   startServerStatusLoop();
 });
