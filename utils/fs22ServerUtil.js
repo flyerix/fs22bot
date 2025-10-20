@@ -13,16 +13,14 @@ async function getFS22ServerStatus(xmlUrl) {
     });
     
     const result = await parser.parseStringPromise(xmlData);
-    
     const serverInfo = result.Server || {};
     
     const isOnline = true;
     const currentPlayers = parseInt(serverInfo.CurrentPlayers || serverInfo.currentPlayers || '0');
-    const maxPlayers = parseInt(serverInfo.MaxPlayers || serverInfo.maxPlayers || '4');
+    const maxPlayers = parseInt(serverInfo.MaxPlayers || serverInfo.maxPlayers || '0');
     const serverName = serverInfo.Name || serverInfo.name || 'FS22 Server';
     const mapName = serverInfo.MapName || serverInfo.mapName || serverInfo['$']?.mapName || 'Mappa sconosciuta';
     
-    // Estrazione mods
     let mods = [];
     try {
       if (serverInfo.Mods) {
@@ -58,7 +56,7 @@ async function getFS22ServerStatus(xmlUrl) {
       maxPlayers: 0,
       serverName: 'Server Offline',
       mapName: 'Mappa sconosciuta',
-      mods: [] // Nota: qui non abbiamo i dati, quindi array vuoto. La persistenza sarà gestita in index.js
+      mods: []
     };
   }
 }
